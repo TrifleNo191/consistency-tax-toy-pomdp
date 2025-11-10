@@ -1,0 +1,113 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import entropy
+
+# ======================
+# TOY POMDP ENVIRONMENT
+# ======================
+
+class ToyPOMDP:
+    """
+    Simple partially observable world with 2 hidden states (W ∈ {0,1})
+    and 2 possible signals (S ∈ {0,1}).
+    
+    True environment: P*(S|W) defines how noisy the signal is.
+    Agent: infers W from S using its own possibly biased model Pθ(W|S).
+    """
+    
+    def __init__(self, p_world=0.5, signal_noise=0.1):
+        self.p_world = p_world          # prior P*(W=1)
+        self.signal_noise = signal_noise # P(S != W)
+        
+    def sample_world(self, n=1):
+        """Sample true world states W ~ Bernoulli(p_world)."""
+        return np.random.rand(n) < self.p_world
+    
+    def sample_signal(self, W):
+        """Generate signal S given world W using true noise model."""
+        flip = np.random.rand(len(W)) < self.signal_noise
+        return np.logical_xor(W, flip).astype(int)
+    
+    def true_posterior(self, s):
+        """Compute P*(W=1|S=s) using Bayes rule."""
+        p_s_given_w1 = 1 - self.signal_noise if s == 1 else self.signal_noise
+        p_s_given_w0 = self.signal_noise if s == 1 else 1 - self.signal_noise
+        p_w1 = self.p_world
+        p_w0 = 1 - p_w1
+        norm = p_s_given_w1*p_w1 + p_s_given_w0*p_w0
+        return (p_s_given_w1*p_w1) / norm
+
+
+# ======================
+# AGENT MODELS
+# ======================
+
+class Agent:
+    """
+    Agent holds an internal model of Pθ(W|S).
+    We can bias or 'deceive' this model intentionally to simulate inconsistency.
+    """
+    
+    def __init__(self, bias=0.0):
+        # bias = 0 -> truthful, bias > 0 -> overestimates P(W=1)
+        self.bias = bias
+    
+    def predict(self, s, true_posterior):
+        """Return biased posterior Pθ(W=1|S=s)."""
+        # simple linear bias model in logit space
+        eps = 1e-9
+        p = true_posterior
+        logit = np.log(p+eps) - np.log(1-p+eps)
+        biased_logit = logit + self.bias
+        biased_p = 1 / (1 + np.exp(-biased_logit))
+        return biased_p
+
+
+# ======================
+# CONSISTENCY TAX MEASUREMENT
+# ======================
+
+def run_simulation(n_samples=10000, bias=0.0):
+    world = ToyPOMDP(p_world=0.5, signal_noise=0.1)
+    agent = Agent(bias=bias)
+
+    W = world.sample_world(n_samples)
+    S = world.sample_signal(W)
+    
+    # Compute true and agent posteriors for each observation
+    p_true = np.array([world.true_posterior(s) for s in S])
+    p_agent = np.array([agent.predict(s, p_t) for s, p_t in zip(S, p_true)])
+    
+    # Compute KL divergence per observation: D_KL(P* || Pθ)
+    kl = (p_true * np.log((p_true+1e-9)/(p_agent+1e-9)) +
+          (1-p_true) * np.log(((1-p_true)+1e-9)/((1-p_agent)+1e-9)))
+    
+    CT = np.mean(kl)
+    
+    # Simple energy proxy: assume energy cost (in arbitrary units) ~ λ * D_KL
+    lambda_eff = 1.0  # scale factor (can map to Joules later)
+    energy = lambda_eff * CT
+    
+    return CT, energy, p_true, p_agent
+
+
+# ======================
+# EXPERIMENT
+# ======================
+
+biases = np.linspace(-3, 3, 25)
+CTs, Energies = [], []
+
+for b in biases:
+    ct, e, _, _ = run_simulation(bias=b)
+    CTs.append(ct)
+    Energies.append(e)
+
+plt.figure(figsize=(7,4))
+plt.plot(biases, CTs, label="Consistency Tax (KL bits)")
+plt.xlabel("Bias parameter (agent deception)")
+plt.ylabel("Mean D_KL(P* || Pθ)")
+plt.title("Consistency Tax grows with internal bias")
+plt.legend()
+plt.grid(True)
+plt.show()
